@@ -1,13 +1,13 @@
-# Claude Code 飞书事件处理器
+# Qoder CLI 飞书事件处理器
 
-自动监听飞书消息并触发 Claude Code 响应。
+自动监听飞书消息并触发 Qoder CLI 响应。
 
 ---
 
 ## 📁 文件结构
 
 ```
-~/.claude/feishu-bot/
+~/.qoder/qodercli-feishu-bot/
 ├── config.json        # 配置文件
 ├── server.js          # 事件处理器主程序
 ├── start.sh           # 启动脚本
@@ -22,16 +22,16 @@
 
 ```bash
 # 启动服务
-~/.claude/feishu-bot/run-daemon.sh start
+~/.qoder/qodercli-feishu-bot/run-daemon.sh start
 
 # 查看状态
-~/.claude/feishu-bot/run-daemon.sh status
+~/.qoder/qodercli-feishu-bot/run-daemon.sh status
 
 # 停止服务
-~/.claude/feishu-bot/run-daemon.sh stop
+~/.qoder/qodercli-feishu-bot/run-daemon.sh stop
 
 # 重启服务
-~/.claude/feishu-bot/run-daemon.sh restart
+~/.qoder/qodercli-feishu-bot/run-daemon.sh restart
 ```
 
 ---
@@ -47,10 +47,9 @@
     "connectionMode": "lark-cli",
     "eventTypes": ["im.message.receive_v1"]
   },
-  "claude": {
-    "acpMode": true,
-    "command": "claude",
-    "args": ["--acp", "--stdio"]
+  "qoder": {
+    "command": "qodercli",
+    "args": ["-p", "--model", "qmodel"]
   }
 }
 ```
@@ -59,8 +58,20 @@
 |------|------|
 | `feishu.connectionMode` | 使用 `lark-cli` 作为事件源（已配置认证） |
 | `feishu.eventTypes` | 监听的事件类型 |
-| `claude.command` | Claude Code 命令 |
-| `claude.args` | ACP 模式参数 |
+| `qoder.command` | Qoder CLI 命令 |
+| `qoder.args` | 运行参数（`-p` 为非交互式单次提问） |
+
+### 可用模型
+
+| 模型选项 | 说明 |
+|---------|------|
+| `qmodel` | 千问系列模型 |
+| `q35model` | 千问 3.5 模型 |
+| `gmodel` | GLM 模型 |
+| `kmodel` | Kimi 模型 |
+| `mmodel` | MiniMax 模型 |
+| `ultimate` | 最强模型 |
+| `auto` | 自动选择 |
 
 ---
 
@@ -68,22 +79,22 @@
 
 1. **事件监听** - 使用 `lark-cli event +subscribe` 建立 WebSocket 长连接
 2. **消息过滤** - 只处理私聊和 @ 消息
-3. **触发响应** - 收到消息后启动 Claude Code (ACP 模式) 处理
+3. **触发响应** - 收到消息后启动 Qoder CLI 处理
 4. **去重机制** - 5 分钟内不重复处理同一消息
 
 ---
 
 ## 📄 日志位置
 
-- 运行日志：`~/.claude/feishu-bot/feishu-event.log`
-- 查看日志：`tail -f ~/.claude/feishu-bot/feishu-event.log`
+- 运行日志：`~/.qoder/qodercli-feishu-bot/feishu-event.log`
+- 查看日志：`tail -f ~/.qoder/qodercli-feishu-bot/feishu-event.log`
 
 ---
 
 ## ⚠️ 注意事项
 
 1. **依赖 lark-cli** - 确保已配置 `lark-cli auth login`
-2. **ACP 模式** - Claude Code 需支持 `--acp` 参数
+2. **依赖 qodercli** - 确保已安装 `npm install -g @qoder-ai/qodercli`
 3. **消息类型** - 目前仅支持文本消息
 
 ---
@@ -95,11 +106,14 @@
 # 检查 lark-cli 配置
 lark-cli config show
 
+# 检查 qodercli 安装
+qodercli --version
+
 # 检查 Node.js 版本
 node --version
 
 # 查看错误日志
-tail -50 ~/.claude/feishu-bot/feishu-event.log
+tail -50 ~/.qoder/qodercli-feishu-bot/feishu-event.log
 ```
 
 ### 收不到消息

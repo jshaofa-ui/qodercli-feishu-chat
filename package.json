@@ -1,7 +1,7 @@
 {
-  "name": "claude-feishu-bot",
+  "name": "qodercli-feishu-bot",
   "version": "1.0.0",
-  "description": "飞书机器人集成 Claude 服务",
+  "description": "飞书机器人集成 Qoder CLI 服务",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -21,10 +21,10 @@
   "keywords": [
     "feishu",
     "lark",
-    "claude",
+    "qodercli",
     "bot",
     "ai"
   ],
-  "author": "Claude Code",
+  "author": "Qoder CLI",
   "license": "MIT"
 }

@@ -1,142 +1,40 @@
 /**
- * Claude Code 飞书事件处理器 - 无限上下文版
- * 所有回复都在主聊天窗口，支持上下文关联，带 emoji 反应
+ * Qoder CLI 飞书机器人 - 长连接模式
+ * 核心功能：监听飞书消息 -> 调用 qodercli -> 回复消息
  */
 
-const { spawn, exec } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-
-const configPath = path.join(__dirname, 'config.json');
-const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+const { exec } = require('child_process');
 
 const processedMessages = new Set();
-const POLL_INTERVAL = 3000;
-const MAX_CONTEXT_LENGTH = 100; // 最多保留 100 条历史消息（近似无限）
+const MESSAGE_EXPIRE_TIME = 5 * 60 * 1000;
 
-// 聊天上下文（按 chatId 分组）
-const chatContexts = new Map();
-
-/**
- * 获取聊天上下文
- */
-function getChatContext(chatId) {
-  if (!chatContexts.has(chatId)) {
-    chatContexts.set(chatId, []);
+// 定期清理过期消息
+setInterval(() => {
+  if (processedMessages.size > 1000) {
+    processedMessages.clear();
   }
-  return chatContexts.get(chatId);
-}
+}, 60000);
 
 /**
- * 添加消息到上下文
+ * 发送飞书消息
  */
-function addToContext(chatId, role, text) {
-  const context = getChatContext(chatId);
-  context.push({ role, text, time: Date.now() });
-  
-  // 限制上下文长度
-  while (context.length > MAX_CONTEXT_LENGTH * 2) {
-    context.shift();
-  }
-}
-
-/**
- * 构建带上下文的 prompt
- */
-function buildPrompt(chatId, newText) {
-  const context = getChatContext(chatId);
-  
-  let prompt = '你是一个飞书聊天助手，请简洁回复（200 字内）。\n\n';
-  
-  // 添加历史对话
-  if (context.length > 0) {
-    prompt += '对话历史：\n';
-    for (const msg of context) {
-      const role = msg.role === 'user' ? '用户' : '助手';
-      prompt += `${role}: ${msg.text.substring(0, 100)}\n`;
-    }
-    prompt += '\n';
-  }
-  
-  // 添加当前消息
-  prompt += `用户：${newText}\n助手：`;
-  
-  return prompt;
-}
-
-// 存储 emoji 反应 ID（messageId -> reactionId）
-const emojiReactions = new Map();
-
-/**
- * 添加 emoji 反应（表示正在处理）
- */
-function addEmojiReaction(messageId) {
-  const paramsData = JSON.stringify({message_id: messageId});
-  const emojiData = JSON.stringify({reaction_type: {emoji_type: "ROSE"}});
-  console.log(`[EMOJI] 🌹 添加反应：${messageId}`);
-  exec(`lark-cli im reactions create --params '${paramsData}' --data '${emojiData}' --as bot`, (err, stdout, stderr) => {
-    if (err) {
-      console.error(`[EMOJI] ❌ 添加失败：${err.message}`);
-    } else {
-      try {
-        const result = JSON.parse(stdout);
-        const reactionId = result.data?.reaction_id;
-        if (reactionId) {
-          emojiReactions.set(messageId, reactionId);
-          console.log(`[EMOJI] ✅ 添加成功 (reaction_id: ${reactionId.substring(0, 20)}...)`);
-        }
-      } catch (e) {
-        console.error(`[EMOJI] 解析失败：${e.message}`);
-      }
-    }
-  });
-}
-
-/**
- * 删除 emoji 反应（表示处理完成）
- */
-function removeEmojiReaction(messageId) {
-  const reactionId = emojiReactions.get(messageId);
-  if (!reactionId) {
-    console.log(`[EMOJI] ⚠️ 无反应可删除：${messageId}`);
-    return;
-  }
-  
-  const paramsData = JSON.stringify({message_id: messageId, reaction_id: reactionId});
-  console.log(`[EMOJI] 🌹 删除反应：${messageId} (reaction_id: ${reactionId.substring(0, 20)}...)`);
-  exec(`lark-cli im reactions delete --params '${paramsData}' --as bot`, (err, stdout, stderr) => {
-    if (err) {
-      console.error(`[EMOJI] ❌ 删除失败：${err.message}`);
-    } else {
-      console.log(`[EMOJI] ✅ 删除成功`);
-      emojiReactions.delete(messageId);
-    }
-  });
-}
-
-/**
- * 发送消息到主聊天（不创建话题）
- */
-function sendMessage(chatId, text) {
+function sendFeishuMessage(chatId, text) {
   return new Promise((resolve, reject) => {
-    // 转义特殊字符
     const escapedText = text
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"')
       .replace(/`/g, '\\`')
       .replace(/\$/g, '\\$')
-      .substring(0, 500); // 限制长度（包含思考过程）
-    
+      .substring(0, 500);
+
     const cmd = `lark-cli im +messages-send --chat-id "${chatId}" --text "${escapedText}" --as bot`;
-    
-    console.log(`[SEND] ${chatId}: ${escapedText.substring(0, 50)}...`);
+
     exec(cmd, (err, stdout, stderr) => {
       if (err) {
-        console.error(`[SEND] ❌ 错误：${err.message}`);
-        console.error(`[SEND] stderr: ${stderr}`);
+        console.error(`[SEND] 错误: ${err.message}`);
         reject(err);
       } else {
-        console.log(`[SEND] ✅ 成功`);
+        console.log(`[SEND] 成功`);
         resolve(stdout);
       }
     });
@@ -144,163 +42,135 @@ function sendMessage(chatId, text) {
 }
 
 /**
- * 调用 Claude - 带上下文
+ * 调用 qodercli 获取 AI 回复
  */
-function callClaude(chatId, text) {
+function callQoder(text) {
   return new Promise((resolve) => {
-    const claude = spawn(config.claude.command, config.claude.args, {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    
-    const prompt = buildPrompt(chatId, text);
-    claude.stdin.write(prompt);
-    claude.stdin.end();
-    
-    let reply = '';
-    claude.stdout.on('data', d => { reply += d.toString(); });
-    
-    claude.on('close', () => {
-      // 限制总长度
-      reply = reply.trim().substring(0, 500);
-      resolve(reply);
-    });
-  });
-}
+    const prompt = text.substring(0, 1000);
+    const escapedPrompt = prompt
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/`/g, '\\`')
+      .replace(/\$/g, '\\$');
 
-/**
- * 获取聊天消息（只处理主消息，忽略话题回复）
- */
-function getMessages(chatId) {
-  return new Promise((resolve) => {
-    exec(`lark-cli im +chat-messages-list --chat-id "${chatId}" --as bot --page-size 20 2>&1`, (err, stdout) => {
-      try {
-        const data = JSON.parse(stdout);
-        const messages = data.data?.messages || [];
-        
-        // 只处理主消息（不处理 thread_replies）
-        const mainMsgs = [];
-        const seenIds = new Set();
-        
-        for (const msg of messages) {
-          if (!seenIds.has(msg.message_id)) {
-            msg.chat_id = chatId;
-            mainMsgs.push(msg);
-            seenIds.add(msg.message_id);
-          }
+    const cmd = `timeout 120 qodercli --model qmodel -p "${escapedPrompt}" 2>&1`;
+
+    console.log(`[QODER] 调用 qodercli...`);
+
+    exec(cmd, { timeout: 125000 }, (err, stdout, stderr) => {
+      if (err) {
+        if (err.killed) {
+          console.log('[QODER] 请求超时');
+          resolve('请求超时，请稍后重试');
+        } else {
+          console.error(`[QODER] 错误: ${err.message}`);
+          resolve('处理请求时发生错误');
         }
-        
-        console.log(`🔄 [POLL] ${chatId}: ${mainMsgs.length} 条消息`);
-        resolve(mainMsgs);
-      } catch (e) {
-        console.error(`❌ [POLL] 解析失败：${e.message}`);
-        resolve([]);
+        return;
       }
+
+      let reply = stdout.trim()
+        .replace(/\x1b\[[0-9;]*m/g, '')
+        .substring(0, 500);
+
+      console.log(`[QODER] 回复: ${reply.substring(0, 50)}...`);
+      resolve(reply || '未获取到回复');
     });
   });
 }
 
 /**
- * 处理消息
+ * 处理飞书消息事件
  */
-async function handleMsg(msg) {
-  if (!msg.message_id) return;
-  if (processedMessages.has(msg.message_id)) return;
-  
-  const chatId = msg.chat_id;
-  
-  // 跳过机器人自己的消息
-  if (msg.sender?.sender_type === 'app' || msg.sender?.id?.startsWith('cli_')) {
-    processedMessages.add(msg.message_id);
-    return;
-  }
-  
-  // 解析内容
-  let text = msg.content;
+async function handleMessage(eventData) {
   try {
-    const c = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-    text = c?.text || '';
-  } catch (e) {}
-  
-  if (!text || text.trim().length === 0) {
-    processedMessages.add(msg.message_id);
-    return;
-  }
-  
-  // 检查时间（10 分钟内）
-  if (msg.create_time) {
-    const msgTime = new Date(msg.create_time.replace(' ', 'T')).getTime();
-    if ((Date.now() - msgTime) > 10 * 60 * 1000) {
-      processedMessages.add(msg.message_id);
-      return;
-    }
-  }
-  
-  // 立即标记为已处理
-  processedMessages.add(msg.message_id);
-  
-  const sender = msg.sender?.id || 'unknown';
-  console.log(`\n📥 [MSG] ${chatId} | ${sender}: ${text.substring(0, 80)}`);
-  
-  // 先给用户消息添加 emoji 反应（表示已收到，正在处理）
-  addEmojiReaction(msg.message_id);
-  
-  // 添加到上下文
-  addToContext(chatId, 'user', text);
-  
-  const reply = await callClaude(chatId, text);
-  if (reply) {
-    console.log(`🤖 [CLAUDE] ${reply.substring(0, 100)}`);
+    const event = JSON.parse(eventData);
+
+    if (event.header?.event_type !== 'im.message.receive_v1') return;
+
+    const message = event.event?.message;
+    if (!message?.message_id) return;
+
+    // 去重
+    if (processedMessages.has(message.message_id)) return;
+    processedMessages.add(message.message_id);
+
+    // 跳过机器人消息
+    if (message.sender?.sender_type === 'app') return;
+
+    // 解析消息内容
+    let text = '';
     try {
-      // 所有回复都发送到主聊天（不创建话题）
-      await sendMessage(chatId, reply);
-      console.log(`✅ [OK] 回复已发送 (主聊天)`);
-      
-      // 处理完成，删除 emoji 反应
-      removeEmojiReaction(msg.message_id);
-      
-      // 将回复添加到上下文
-      addToContext(chatId, 'assistant', reply);
-    } catch (e) {
-      console.error(`❌ [ERR] 发送失败：${e.message}`);
+      const content = typeof message.content === 'string'
+        ? JSON.parse(message.content)
+        : message.content;
+      text = content?.text || '';
+    } catch {
+      text = message.content || '';
     }
+
+    if (!text?.trim()) return;
+
+    const chatId = message.chat_id;
+    console.log(`[MSG] ${chatId}: ${text.substring(0, 80)}`);
+
+    // 调用 qodercli 并回复
+    const reply = await callQoder(text);
+    await sendFeishuMessage(chatId, reply);
+
+  } catch (e) {
+    console.error(`[ERROR] 事件处理失败: ${e.message}`);
   }
 }
 
 /**
- * 主循环
+ * 启动长连接监听
  */
-async function main() {
+function startEventListener() {
   console.log('='.repeat(50));
-  console.log('Claude Code 飞书机器人 - 无限上下文版');
+  console.log('Qoder CLI 飞书机器人 - 长连接模式');
   console.log('='.repeat(50));
-  console.log(`[CMD] ${config.claude.command} ${config.claude.args.join(' ')}`);
-  console.log(`[POLL] ${POLL_INTERVAL}ms`);
-  console.log(`[CONTEXT] 最多保留 ${MAX_CONTEXT_LENGTH} 轮对话（近似无限）`);
-  console.log('[READY] 开始轮询...\n');
-  
-  // 预定义要监听的聊天
-  const targetChats = [
-    'oc_46c41a301af3569cc149d190d37c0060',  // 董事长私聊
-    'oc_dd65a2afd81096384d16588ae9aff282',  // 电子斗蛐蛐群
-  ];
-  
-  while (true) {
-    try {
-      // 轮询所有目标聊天
-      for (const chatId of targetChats) {
-        const msgs = await getMessages(chatId);
-        for (const msg of msgs) {
-          await handleMsg(msg);
-        }
+  console.log('[READY] 开始监听飞书事件...\n');
+
+  const eventProc = exec('lark-cli event +subscribe --as bot --force');
+
+  eventProc.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n').filter(l => l.trim());
+    for (const line of lines) {
+      try {
+        handleMessage(line);
+      } catch (e) {
+        // 忽略非 JSON 行
       }
-    } catch (e) {
-      console.error(`❌ [ERR] ${e.message}`);
     }
-    
-    await new Promise(r => setTimeout(r, POLL_INTERVAL));
-  }
+  });
+
+  eventProc.stderr.on('data', (data) => {
+    const msg = data.toString().trim();
+    if (msg) console.error(`[EVENT] ${msg}`);
+  });
+
+  eventProc.on('close', (code) => {
+    console.log(`[EVENT] 连接关闭，退出码: ${code}`);
+    console.log('[EVENT] 5 秒后重连...');
+    setTimeout(startEventListener, 5000);
+  });
+
+  eventProc.on('error', (err) => {
+    console.error(`[EVENT] 启动失败: ${err.message}`);
+    console.log('[EVENT] 5 秒后重试...');
+    setTimeout(startEventListener, 5000);
+  });
 }
 
-main();
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+startEventListener();
+
+process.on('SIGINT', () => {
+  console.log('\n[EXIT] 正在退出...');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n[EXIT] 正在退出...');
+  process.exit(0);
+});

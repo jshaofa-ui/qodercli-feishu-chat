@@ -1,8 +1,8 @@
 #!/bin/bash
-# Claude Code 飞书事件处理器 - 后台守护进程
+# Qoder CLI 飞书事件处理器 - 后台守护进程
 
-PIDFILE="$HOME/.claude/feishu-bot/feishu-event.pid"
-LOGFILE="$HOME/.claude/feishu-bot/feishu-event.log"
+PIDFILE="$HOME/.qoder/qodercli-feishu-bot/feishu-event.pid"
+LOGFILE="$HOME/.qoder/qodercli-feishu-bot/feishu-event.log"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 start() {
@@ -11,7 +11,7 @@ start() {
         return 1
     fi
 
-    echo "🚀 启动 Claude Code 飞书事件处理器..."
+    echo "🚀 启动 Qoder CLI 飞书服务..."
     cd "$SCRIPT_DIR"
     nohup node server.js > "$LOGFILE" 2>&1 &
     echo $! > "$PIDFILE"
