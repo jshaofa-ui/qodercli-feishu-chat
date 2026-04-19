@@ -19,9 +19,25 @@ const {
   rejectTask,
   getApprovalInstance
 } = require('./approval');
+const {
+  startTerminal,
+  stopTerminal,
+  sendToTerminal,
+  watchOutput,
+  handleFeishuMessage: handleTerminalMessage,
+  isRunning: isTerminalRunning
+} = require('./terminal-bridge');
 
 const PROFILE = 'cli_a91d6fb107f8dbd8'; // 幻视应用 profile
+const PRIVATE_CHAT_ID = 'oc_c30f6d7aa03f97cca0b4e588f5dcafc5'; // 私聊窗口 ID
 const processedMessages = new Set();
+
+// 私聊会话状态
+const privateChatState = {
+  lastMessageTime: null,
+  messageCount: 0,
+  isProcessing: false
+};
 
 // 定期清理过期消息
 setInterval(() => {
@@ -86,8 +102,10 @@ function sendFeishuCard(chatId, cardJson) {
 
 /**
  * 调用 qodercli 获取 AI 回复
+ * @param {string} text - 用户消息
+ * @param {boolean} isPrivate - 是否是私聊消息（使用 -c 继续对话）
  */
-function callQoder(text) {
+function callQoder(text, isPrivate = false) {
   return new Promise((resolve) => {
     const prompt = text.substring(0, 1000);
     const escapedPrompt = prompt
@@ -96,9 +114,13 @@ function callQoder(text) {
       .replace(/`/g, '\\`')
       .replace(/\$/g, '\\$');
 
-    const cmd = `timeout 120 qodercli --model qmodel -p "${escapedPrompt}" 2>&1`;
+    // 私聊使用 -c 继续对话，保持上下文；群聊使用独立提问
+    const cmd = isPrivate
+      ? `timeout 120 qodercli --model qmodel -c -p "${escapedPrompt}" 2>&1`
+      : `timeout 120 qodercli --model qmodel -p "${escapedPrompt}" 2>&1`;
 
-    console.log(`[QODER] 调用 qodercli...`);
+    const modeLabel = isPrivate ? 'private-continue' : 'group-ask';
+    console.log(`[QODER] Calling qodercli mode=${modeLabel}`);
 
     exec(cmd, { timeout: 125000 }, (err, stdout, stderr) => {
       if (err) {
@@ -114,7 +136,7 @@ function callQoder(text) {
 
       let reply = stdout.trim()
         .replace(/\x1b\[[0-9;]*m/g, '')
-        .substring(0, 500);
+        .substring(0, 2000); // 私聊回复可以长一些
 
       console.log(`[QODER] 回复: ${reply.substring(0, 50)}...`);
       resolve(reply || '未获取到回复');
@@ -303,6 +325,25 @@ async function handleApprovalCommand(chatId, text) {
   return false;
 }
 
+/**
+ * 处理私聊专用命令
+ */
+function handlePrivateCommand(chatId, text) {
+  const trimmed = text.trim();
+
+  // 查看私聊会话状态
+  if (trimmed === '会话状态' || trimmed === '状态') {
+    const status = `📊 私聊会话状态\n\n` +
+      `最后消息时间: ${privateChatState.lastMessageTime ? new Date(privateChatState.lastMessageTime).toLocaleString() : '无'}\n` +
+      `消息数量: ${privateChatState.messageCount} 条\n` +
+      `处理状态: ${privateChatState.isProcessing ? '处理中...' : '空闲'}`;
+    sendFeishuText(chatId, status);
+    return true;
+  }
+
+  return false;
+}
+
 // ============================================================
 // 事件处理
 // ============================================================
@@ -341,14 +382,50 @@ async function handleFeishuEvent(eventData) {
       if (!text?.trim()) return;
 
       const chatId = message.chat_id;
-      console.log(`[MSG] ${chatId}: ${text.substring(0, 80)}`);
+      const isPrivate = chatId === PRIVATE_CHAT_ID;
 
-      // 优先处理审批命令
+      console.log(`[MSG] ${isPrivate ? '私聊' : '群聊'} ${chatId}: ${text.substring(0, 80)}`);
+
+      // 私聊消息：使用终端桥接
+      if (isPrivate) {
+        // 先检查是否是终端控制命令
+        const terminalHandled = await handleTerminalMessage(chatId, text);
+        if (terminalHandled) return;
+
+        // 普通对话：如果终端在运行，发送到终端
+        if (isTerminalRunning()) {
+          sendToTerminal(text);
+          return;
+        }
+
+        // 终端未运行：使用传统的 qodercli 调用
+        const handled = await handlePrivateCommand(chatId, text);
+        if (handled) return;
+
+        privateChatState.lastMessageTime = Date.now();
+        privateChatState.messageCount++;
+
+        if (privateChatState.isProcessing) {
+          await sendFeishuText(chatId, '正在处理上一条消息，请稍候...');
+          return;
+        }
+
+        privateChatState.isProcessing = true;
+        try {
+          const reply = await callQoder(text, true);
+          await sendFeishuText(chatId, reply);
+        } finally {
+          privateChatState.isProcessing = false;
+        }
+        return;
+      }
+
+      // 群聊消息：处理审批命令或普通对话
       const handled = await handleApprovalCommand(chatId, text);
       if (handled) return;
 
       // 普通对话：调用 qodercli 并回复
-      const reply = await callQoder(text);
+      const reply = await callQoder(text, false);
       await sendFeishuText(chatId, reply);
     }
 
@@ -421,12 +498,18 @@ function startEventListener() {
 
 startEventListener();
 
+// 启动终端桥接（可选，用户通过飞书命令启动）
+// 默认不自动启动，等待用户发送"启动终端"命令
+console.log('\n💡 私聊发送 "启动终端" 可开启终端双向同步');
+
 process.on('SIGINT', () => {
   console.log('\n[EXIT] 正在退出...');
+  stopTerminal();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\n[EXIT] 正在退出...');
+  stopTerminal();
   process.exit(0);
 });
